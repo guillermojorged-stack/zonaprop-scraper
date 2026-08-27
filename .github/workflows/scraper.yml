@@ -1,1 +1,43 @@
+name: Zonaprop Scraper
 
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # cada 6 horas (UTC) - barrido general
+  workflow_dispatch:         # correrlo manual desde GitHub
+    inputs:
+      url:
+        description: 'URL de Zonaprop a scrapear'
+        required: false
+  repository_dispatch:       # disparado desde la web (bajo demanda)
+    types: [scrape-request]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Determinar URL a scrapear
+        id: geturl
+        run: |
+          if [ -n "${{ github.event.client_payload.url }}" ]; then
+            echo "url=${{ github.event.client_payload.url }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.inputs.url }}" ]; then
+            echo "url=${{ github.event.inputs.url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=${{ vars.ZONAPROP_SEARCH_URL }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ejecutar scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DEBUG_SELECTORS: '1'
+        run: node scraper.js "${{ steps.geturl.outputs.url }}"
