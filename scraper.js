@@ -33,20 +33,54 @@ if (!SCRAPERAPI_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ---- Selectores (único bloque a tocar si cambia el diseño) ----
+// ---- Selectores para el modo listado (búsqueda de URLs de propiedades) ----
 const SELECTORS = {
-  cardList: 'div[data-posting-type], div.postingCard, div[data-qa="posting PROPERTY"]',
   cardLink: 'a[data-to-posting], a.go-to-posting, a[href*="-"][href$=".html"]',
-  title: 'h1, [data-qa="POSTING_CARD_DESCRIPTION"]',
-  price: '[data-qa="POSTING_CARD_PRICE"], .price-items, .price-tag, [data-qa="PRICE"]',
-  expenses: '[data-qa="expensas"], [data-qa="EXPENSAS"], .expenses',
-  location: '[data-qa="POSTING_CARD_LOCATION"], [data-qa="LOCATION"], .postingLocation',
-  description: '[data-qa="POSTING_CARD_DESCRIPTION"], #longDescription, .article-section-description, [data-qa="DESCRIPTION"]',
-  features: 'span.postingMainFeatures, [data-qa="POSTING_CARD_FEATURES"] span, [data-qa="MAIN_FEATURES"] span',
-  contact: '[data-qa="cardOwnerName"], .PublisherName, .company-info a, [data-qa="PUBLISHER_NAME"]',
-  phone: '[data-qa="POSTING_CARD_PHONE"], a[href^="tel:"]',
-  photos: 'img[data-flkty-lazyload], .gallery img, picture img',
 };
+
+// La ficha de Zonaprop trae un bloque `const avisoInfo = {...}` embebido en el HTML
+// con todos los datos estructurados (precio, m², ambientes, fotos, teléfono, etc).
+// Es mucho más estable que scrapear clases CSS, que cambian seguido.
+// MANTENIMIENTO: si Zonaprop deja de incluir `avisoInfo`, ahí es donde hay que mirar.
+function extraerCampoJs(html, key) {
+  const marker = `'${key}':`;
+  const idx = html.indexOf(marker);
+  if (idx === -1) return null;
+  let i = idx + marker.length;
+  while (/\s/.test(html[i])) i++;
+  const openChar = html[i];
+  if (openChar === '{' || openChar === '[') {
+    const closeChar = openChar === '{' ? '}' : ']';
+    let depth = 0;
+    const start = i;
+    for (; i < html.length; i++) {
+      if (html[i] === openChar) depth++;
+      else if (html[i] === closeChar) {
+        depth--;
+        if (depth === 0) { i++; break; }
+      }
+    }
+    try {
+      return JSON.parse(html.slice(start, i));
+    } catch {
+      return null;
+    }
+  }
+  if (openChar === "'" || openChar === '"') {
+    const quote = openChar;
+    const start = i + 1;
+    let j = start;
+    while (j < html.length) {
+      if (html[j] === '\\') { j += 2; continue; }
+      if (html[j] === quote) break;
+      j++;
+    }
+    return html.slice(start, j);
+  }
+  let j = i;
+  while (j < html.length && !/[,\n]/.test(html[j])) j++;
+  return html.slice(i, j).trim();
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -83,78 +117,54 @@ async function scrapeListado(urlBusqueda) {
   return [...urls];
 }
 
-function debugSelectores($) {
-  const dataQaEls = [...new Set($('[data-qa]').map((_, el) => $(el).attr('data-qa')).get())];
-  const priceLike = [];
-  $('*').each((_, el) => {
-    const $el = $(el);
-    if ($el.children().length === 0) {
-      const t = $el.text().trim();
-      if (/(\$|USD|U\$S)\s?[\d.,]+/.test(t)) {
-        priceLike.push({ tag: el.tagName, class: $el.attr('class'), dataQa: $el.attr('data-qa'), text: t });
-      }
-    }
-  });
-  const imgs = $('img');
-  const imgSamples = imgs.slice(0, 5).map((_, img) => ({
-    src: $(img).attr('src'),
-    dataSrc: $(img).attr('data-src') || $(img).attr('data-flkty-lazyload'),
-    class: $(img).attr('class'),
-  })).get();
-  console.log('DEBUG_SELECTORS:', JSON.stringify({ dataQaEls, priceLike: priceLike.slice(0, 8), imgCount: imgs.length, imgSamples }, null, 2));
-}
-
 async function scrapeFicha(url) {
   const html = await obtenerHtml(url);
-  const $ = cheerio.load(html);
 
-  if (process.env.DEBUG_SELECTORS) debugSelectores($);
+  const idAviso = extraerCampoJs(html, 'idAviso') || extraerIdDeUrl(url);
+  const precioTexto = extraerCampoJs(html, 'price') || '';
+  const expensasTexto = extraerCampoJs(html, 'expenses') || '';
+  const descripcionHtml = extraerCampoJs(html, 'description') || '';
+  const location = extraerCampoJs(html, 'location');
+  const mainFeatures = extraerCampoJs(html, 'mainFeatures') || {};
+  const publisher = extraerCampoJs(html, 'publisher');
+  const whatsApp = extraerCampoJs(html, 'whatsApp');
+  const pictures = extraerCampoJs(html, 'pictures') || [];
+  const postingTitle = extraerCampoJs(html, 'postingTitle') || extraerCampoJs(html, 'generatedTitle');
 
-  const text = (sel) => $(sel).first().text().trim();
-  const fotos = [];
-  $(SELECTORS.photos).each((_, img) => {
-    const src = $(img).attr('src') || $(img).attr('data-src') || $(img).attr('data-flkty-lazyload');
-    if (src && !src.includes('data:image') && !fotos.includes(src)) fotos.push(src);
-  });
+  const { precio, moneda } = parsePrecio(precioTexto);
+  const expensas = expensasTexto ? Number(String(expensasTexto).replace(/[^\d]/g, '')) || null : null;
 
-  const features = $(SELECTORS.features).map((_, s) => $(s).text().trim()).get();
+  const ubicacion = location ? [location.name, location.parent?.name].filter(Boolean).join(', ') : null;
+  const descripcion = descripcionHtml.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim();
 
-  const data = {
-    titulo: text(SELECTORS.title),
-    precioTexto: text(SELECTORS.price),
-    expensasTexto: text(SELECTORS.expenses),
-    ubicacion: text(SELECTORS.location),
-    descripcion: text(SELECTORS.description),
-    inmobiliaria: text(SELECTORS.contact),
-    telefono: ($(SELECTORS.phone).first().attr('href') || '').replace('tel:', ''),
-    features,
-    fotos: fotos.slice(0, 20),
+  const numFeature = (id) => {
+    const v = mainFeatures[id]?.value;
+    if (!v) return null;
+    const n = Number(String(v).replace(/[^\d]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : null;
   };
 
-  const { precio, moneda } = parsePrecio(data.precioTexto);
-  const expensas = data.expensasTexto ? Number(data.expensasTexto.replace(/[^\d]/g, '')) || null : null;
-
-  const m2 = data.features.find((f) => /m²/.test(f));
-  const ambientes = data.features.find((f) => /amb\./i.test(f));
-  const dormitorios = data.features.find((f) => /dorm/i.test(f));
-  const banos = data.features.find((f) => /baño/i.test(f));
+  const fotos = pictures
+    .map((p) => p.url1200x1200 || p.url730x532 || p.url360x266)
+    .filter(Boolean)
+    .slice(0, 20);
 
   return {
-    zonaprop_id: extraerIdDeUrl(url),
+    zonaprop_id: String(idAviso),
     url,
-    titulo: data.titulo,
-    descripcion: data.descripcion,
+    titulo: postingTitle,
+    descripcion,
     precio,
     moneda,
     expensas,
-    ubicacion: data.ubicacion,
-    m2_totales: m2 ? Number(m2.replace(/[^\d]/g, '')) || null : null,
-    ambientes: ambientes ? Number(ambientes.replace(/[^\d]/g, '')) || null : null,
-    dormitorios: dormitorios ? Number(dormitorios.replace(/[^\d]/g, '')) || null : null,
-    banos: banos ? Number(banos.replace(/[^\d]/g, '')) || null : null,
-    inmobiliaria: data.inmobiliaria,
-    telefono_contacto: data.telefono,
-    fotos: data.fotos,
+    ubicacion,
+    m2_totales: numFeature('CFT100'),
+    ambientes: numFeature('CFT1'),
+    dormitorios: numFeature('CFT2'),
+    banos: numFeature('CFT3'),
+    inmobiliaria: publisher?.name || null,
+    telefono_contacto: whatsApp || null,
+    fotos,
     ultima_actualizacion: new Date().toISOString(),
   };
 }
