@@ -43,11 +43,12 @@ const SELECTORS = {
 // Es mucho más estable que scrapear clases CSS, que cambian seguido.
 // MANTENIMIENTO: si Zonaprop deja de incluir `avisoInfo`, ahí es donde hay que mirar.
 function extraerCampoJs(html, key) {
-  const marker = `'${key}':`;
-  const idx = html.indexOf(marker);
-  if (idx === -1) return null;
-  let i = idx + marker.length;
-  while (/\s/.test(html[i])) i++;
+  // Zonaprop no siempre pone el ':' pegado a la clave ('foo': vs 'foo' :),
+  // así que buscamos con una regex tolerante a espacios en vez de indexOf.
+  const re = new RegExp(`'${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'\\s*:\\s*`);
+  const match = re.exec(html);
+  if (!match) return null;
+  let i = match.index + match[0].length;
   const openChar = html[i];
   if (openChar === '{' || openChar === '[') {
     const closeChar = openChar === '{' ? '}' : ']';
@@ -104,6 +105,27 @@ function extraerIdDeUrl(url) {
   return match ? match[1] : url.split('/').pop().replace('.html', '');
 }
 
+// La página tiene VARIOS bloques de JS que mencionan las mismas claves (ej. un
+// "dataLayer" de analítica que usa 'idAviso': postingId, con una variable en vez
+// del valor real). Acotamos la búsqueda al bloque `const avisoInfo = {...}`
+// específicamente, que es el que tiene los valores reales ya resueltos.
+function extraerBloqueAvisoInfo(html) {
+  const marker = 'const avisoInfo = {';
+  const idx = html.indexOf(marker);
+  if (idx === -1) return html;
+  let i = idx + marker.length - 1; // posicionado en el '{' de apertura
+  let depth = 0;
+  const start = i;
+  for (; i < html.length; i++) {
+    if (html[i] === '{') depth++;
+    else if (html[i] === '}') {
+      depth--;
+      if (depth === 0) { i++; break; }
+    }
+  }
+  return html.slice(start, i);
+}
+
 async function scrapeListado(urlBusqueda) {
   const html = await obtenerHtml(urlBusqueda);
   const $ = cheerio.load(html);
@@ -119,17 +141,18 @@ async function scrapeListado(urlBusqueda) {
 
 async function scrapeFicha(url) {
   const html = await obtenerHtml(url);
+  const bloque = extraerBloqueAvisoInfo(html);
 
-  const idAviso = extraerCampoJs(html, 'idAviso') || extraerIdDeUrl(url);
-  const precioTexto = extraerCampoJs(html, 'price') || '';
-  const expensasTexto = extraerCampoJs(html, 'expenses') || '';
-  const descripcionHtml = extraerCampoJs(html, 'description') || '';
-  const location = extraerCampoJs(html, 'location');
-  const mainFeatures = extraerCampoJs(html, 'mainFeatures') || {};
-  const publisher = extraerCampoJs(html, 'publisher');
-  const whatsApp = extraerCampoJs(html, 'whatsApp');
-  const pictures = extraerCampoJs(html, 'pictures') || [];
-  const postingTitle = extraerCampoJs(html, 'postingTitle') || extraerCampoJs(html, 'generatedTitle');
+  const idAviso = extraerCampoJs(bloque, 'idAviso') || extraerIdDeUrl(url);
+  const precioTexto = extraerCampoJs(bloque, 'price') || '';
+  const expensasTexto = extraerCampoJs(bloque, 'expenses') || '';
+  const descripcionHtml = extraerCampoJs(bloque, 'description') || '';
+  const location = extraerCampoJs(bloque, 'location');
+  const mainFeatures = extraerCampoJs(bloque, 'mainFeatures') || {};
+  const publisher = extraerCampoJs(bloque, 'publisher');
+  const whatsApp = extraerCampoJs(bloque, 'whatsApp');
+  const pictures = extraerCampoJs(bloque, 'pictures') || [];
+  const postingTitle = extraerCampoJs(bloque, 'postingTitle') || extraerCampoJs(bloque, 'generatedTitle');
 
   const { precio, moneda } = parsePrecio(precioTexto);
   const expensas = expensasTexto ? Number(String(expensasTexto).replace(/[^\d]/g, '')) || null : null;
