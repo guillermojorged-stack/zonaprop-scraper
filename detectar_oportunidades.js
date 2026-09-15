@@ -8,8 +8,9 @@
  * Requiere .env con:
  *   SUPABASE_URL=
  *   SUPABASE_SERVICE_ROLE_KEY=
- *   RESEND_API_KEY=
+ *   BREVO_API_KEY=
  *   ALERTA_EMAIL_TO=  (a quién avisar)
+ *   ALERTA_EMAIL_FROM=  (remitente verificado en Brevo, ej: alertas@teamconectar.com.ar)
  */
 
 require('dotenv').config();
@@ -20,15 +21,16 @@ const MUESTRA_MINIMA = 5;   // barrios con menos publicaciones que esto se ignor
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
 const ALERTA_EMAIL_TO = process.env.ALERTA_EMAIL_TO;
+const ALERTA_EMAIL_FROM = process.env.ALERTA_EMAIL_FROM || 'alertas@teamconectar.com.ar';
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('Faltan SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY en .env');
   process.exit(1);
 }
-if (!RESEND_API_KEY || !ALERTA_EMAIL_TO) {
-  console.error('Faltan RESEND_API_KEY / ALERTA_EMAIL_TO en .env');
+if (!BREVO_API_KEY || !ALERTA_EMAIL_TO) {
+  console.error('Faltan BREVO_API_KEY / ALERTA_EMAIL_TO en .env');
   process.exit(1);
 }
 
@@ -67,22 +69,23 @@ async function enviarMail(oportunidades) {
       <tbody>${filas}</tbody>
     </table>`;
 
-  const res = await fetch('https://api.resend.com/emails', {
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
+      'api-key': BREVO_API_KEY,
       'Content-Type': 'application/json',
+      Accept: 'application/json',
     },
     body: JSON.stringify({
-      from: 'Tasador Team Conectar <alertas@teamconectar.com.ar>',
-      to: [ALERTA_EMAIL_TO],
+      sender: { name: 'Tasador Team Conectar', email: ALERTA_EMAIL_FROM },
+      to: [{ email: ALERTA_EMAIL_TO }],
       subject: `${oportunidades.length} oportunidad(es) detectadas en Zonaprop`,
-      html,
+      htmlContent: html,
     }),
   });
 
   if (!res.ok) {
-    throw new Error(`Resend respondió ${res.status}: ${await res.text()}`);
+    throw new Error(`Brevo respondió ${res.status}: ${await res.text()}`);
   }
 }
 
