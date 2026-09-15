@@ -49,6 +49,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           ALERTA_EMAIL_TO: ${{ vars.ALERTA_EMAIL_TO }}
+          ALERTA_EMAIL_FROM: ${{ vars.ALERTA_EMAIL_FROM }}
         run: node detectar_oportunidades.js
